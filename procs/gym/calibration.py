@@ -1,3 +1,24 @@
+from __future__ import annotations
+
+import numpy as np
+
+from procs.gym.helpers.fast_rollout import fast_simulate
+
+"""
+A-S parameter calibration: Calculating Trading Intensity.
+
+We calibrate A and k of trading intensity, as well as calculate the market volatility sigma. 
+We will calibrate these values using market data according to this article: 
+https://quant.stackexchange.com/questions/36073/how-does-one-calibrate-lambda-in-a-avellaneda-stoikov-market-making-problem. 
+
+In order to do that, we need to record market order’s arrivals.
+
+Reference: Guéant–Lehalle–Fernandez-Tapia, hftbacktest.
+"""
+
+## Put param calibration code here.
+
+
 """
 A-S parameter calibration via Optuna.
 
@@ -15,13 +36,6 @@ Usage::
 
 Reference: Bergstra & Bengio (2012), Akiba et al. (2019, Optuna).
 """
-
-from __future__ import annotations
-
-import numpy as np
-
-from procs.gym.helpers.fast_rollout import fast_simulate
-
 
 def tune_gamma(
     midprices: np.ndarray,
