@@ -209,3 +209,6 @@ __marimo__/
 # Data
 datasets/
 other_data/
+
+#LLM files
+/claude.md
