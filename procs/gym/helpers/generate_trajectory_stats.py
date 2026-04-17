@@ -82,6 +82,8 @@ def generate_trajectory_stats(
 
     # Inventory and spread
     sum_abs_q = np.abs(obs[:, INVENTORY_INDEX]).copy()
+    near_cap_threshold = 0.8 * env.max_inventory
+    sum_near_cap = (np.abs(obs[:, INVENTORY_INDEX]) >= near_cap_threshold).astype(np.float64)
     sum_spread = np.zeros(N)
     step_count = 0
 
@@ -116,6 +118,7 @@ def generate_trajectory_stats(
 
         # Inventory and spread
         sum_abs_q += np.abs(obs[:, INVENTORY_INDEX])
+        sum_near_cap += (np.abs(obs[:, INVENTORY_INDEX]) >= near_cap_threshold)
         sum_spread += action[:, 0] + action[:, 1]
 
         if done[0]:
@@ -154,6 +157,7 @@ def generate_trajectory_stats(
         "max_drawdown": max_drawdown,
         "pnl_to_map": pnl_to_map,
         "mean_abs_q": mean_abs_q,
+        "near_cap_fraction": sum_near_cap / obs_count,
         "n_steps": T,
     }
 

@@ -39,7 +39,7 @@ try:
         VecEnvObs, VecEnvStepReturn, VecEnvIndices,
     )
     _SB3_AVAILABLE = True
-except ImportError:
+except Exception:
     _SB3_AVAILABLE = False
 
     # Stub so the module can be imported without SB3 installed

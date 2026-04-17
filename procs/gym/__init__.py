@@ -24,9 +24,32 @@ from procs.gym.metrics import (
     get_pnl_to_map,
     backtest_summary,
 )
+<<<<<<< ours
+=======
+from procs.gym.experiment_config import (
+    BMExperimentConfig,
+    ReplayExperimentConfig,
+    find_repo_root,
+)
+from procs.gym.notebook_support import (
+    build_replay_env,
+    build_replay_feature_computer,
+    evaluate_agent_over_seeds,
+    evaluate_as_fast,
+    freeze_vecnorm,
+    make_vecnorm,
+    run_qmax_sensitivity,
+    stats_dict_to_frame,
+    summarise_agent_frames,
+)
+>>>>>>> theirs
 
 # SB3 wrapper — only available when stable-baselines3 is installed
 try:
     from procs.gym.sb3_wrapper import StableBaselinesTradingEnvironment
+<<<<<<< ours
 except ImportError:
+=======
+except Exception:
+>>>>>>> theirs
     pass

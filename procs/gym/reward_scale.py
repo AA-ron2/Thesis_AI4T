@@ -25,7 +25,7 @@ def estimate_reward_scale(
     terminal_time: float = 1.0,
     n_steps: int = 200,
     tick_size: float = 0.01,
-    Q_MAX: int = 200,
+    Q_MAX: int = 10,
     num_trajectories: int = 1000,
     use_bm: bool = True,
 ) -> float:

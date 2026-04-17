@@ -2,9 +2,10 @@
 Fast rollout for market-replay A-S simulation.
 
 Bypasses the Gymnasium ``env.step()`` / ``agent.get_action()`` interface
-and runs the entire simulation in a tight NumPy loop.  All random draws
-are **pre-sampled** before the loop, so each iteration is pure arithmetic
-on ``(N,)`` arrays with zero Python-level function-call overhead.
+and runs the entire simulation in a tight NumPy loop. Deterministic terms
+are pre-computed once, while the stochastic arrival/fill draws are sampled
+inside the loop to avoid allocating impractically large ``(T, N, ...)``
+buffers for long replay sessions.
 
 Performance comparison (714k steps, N=1000):
     Gymnasium loop:  ~13 minutes   (Python overhead per step)
@@ -38,8 +39,9 @@ def fast_simulate(
     """
     Run a full market-replay A-S simulation with streaming metrics.
 
-    Pre-samples all randomness, then loops over T steps doing only
-    vectorised NumPy arithmetic on ``(N,)`` arrays.
+    Pre-computes deterministic terms once, then loops over T steps doing
+    vectorised NumPy arithmetic on ``(N,)`` arrays with per-step random
+    draws for arrivals/fills.
 
     Parameters
     ----------
@@ -64,7 +66,7 @@ def fast_simulate(
     stats : dict[str, np.ndarray]
         Same keys as ``generate_trajectory_stats``:
         total_pnl, terminal_q, mean_spread, sharpe, sortino,
-        max_drawdown, pnl_to_map, mean_abs_q, n_steps.
+        max_drawdown, pnl_to_map, mean_abs_q, near_cap_fraction, n_steps.
     """
     rng = np.random.default_rng(seed)
     M = len(midprices)
@@ -82,6 +84,11 @@ def fast_simulate(
     # Constants
     gs2 = gamma * sigma * sigma      # γσ² (used every step)
     spread_const = (2.0 / gamma) * np.log(1.0 + gamma / kappa)
+    near_cap_threshold = 0.8 * Q_MAX
+    if use_linear_approximation:
+        p_arrival_arr = A * dt
+    else:
+        p_arrival_arr = 1.0 - np.exp(-A * dt)
 
     # ══════════════════════════════════════════════════════════
     # 2.  INITIALISE state vectors  (N,)
@@ -99,6 +106,7 @@ def fast_simulate(
     sum_r2_neg = np.zeros(N)
     count_neg = np.zeros(N, dtype=np.float64)
     sum_abs_q = np.zeros(N)          # includes initial q=0
+    sum_near_cap = np.zeros(N)
     sum_spread = np.zeros(N)
     step_count = 0
 
@@ -127,6 +135,7 @@ def fast_simulate(
             running_max_pnl = np.maximum(running_max_pnl, pnl)
             max_drawdown = np.maximum(max_drawdown, running_max_pnl - pnl)
             sum_abs_q += np.abs(q)
+            sum_near_cap += (np.abs(q) >= near_cap_threshold)
             step_count += 1
             continue
 
@@ -153,10 +162,7 @@ def fast_simulate(
         delta_ask = np.maximum(ask - S_t, min_delta)   # (N,)
 
         # ── Arrivals (sample inline) ─────────────────────
-        if use_linear_approximation:
-            p_arrival = A * dt_t
-        else:
-            p_arrival = 1.0 - np.exp(-A * dt_t)
+        p_arrival = p_arrival_arr[t]
 
         u_arr = rng.uniform(size=(N, 2))
         arrived_bid = u_arr[:, 0] < p_arrival            # (N,) bool
@@ -196,6 +202,7 @@ def fast_simulate(
         max_drawdown = np.maximum(max_drawdown, running_max_pnl - pnl)
 
         sum_abs_q += np.abs(q)
+        sum_near_cap += (np.abs(q) >= near_cap_threshold)
         sum_spread += delta_bid + delta_ask
         step_count += 1
 
@@ -232,6 +239,7 @@ def fast_simulate(
         "max_drawdown": max_drawdown,
         "pnl_to_map": pnl_to_map,
         "mean_abs_q": mean_abs_q,
+        "near_cap_fraction": sum_near_cap / obs_count,
         "n_steps": step_count,
     }
 
