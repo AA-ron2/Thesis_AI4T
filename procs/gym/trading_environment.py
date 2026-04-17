@@ -68,7 +68,7 @@ class TradingEnvironment(gymnasium.Env):
         reward_function: RewardFunction | None = None,
         initial_cash: float = 0.0,
         initial_inventory: int = 0,
-        max_inventory: int = 50,
+        max_inventory: int = 10,
         normalise_action_space: bool = False,
         normalise_observation_space: bool = False,
         normalise_rewards: bool = False,

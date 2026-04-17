@@ -294,7 +294,7 @@ def tune_gamma(
     kappa: float,
     A: float,
     tick_size: float = 0.00001,
-    Q_MAX: int = 50,
+    Q_MAX: int = 10,
     gamma_range: tuple[float, float] = (0.001, 1.0),
     n_trials: int = 100,
     num_trajectories: int = 50,
