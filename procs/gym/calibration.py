@@ -110,10 +110,9 @@ def calibrate_as_parameters(
 
     Example
     -------
-    >>> params = calibrate_as_parameters(
-    ...     "datasets/binance_book_snapshot_25_2025-01-01_DOGEUSDT.csv",
-    ...     tick_size=0.00001,
-    ... )
+    >>> from procs.gym.experiment_config import ReplayExperimentConfig
+    >>> cfg = ReplayExperimentConfig()
+    >>> params = calibrate_as_parameters(str(cfg.data_path()), tick_size=cfg.tick_size)
     >>> print(f"σ={params.sigma:.6f}, A={params.A:.4f}, κ={params.kappa:.0f}")
     σ=0.000021, A=0.7834, κ=34821
     """

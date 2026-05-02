@@ -30,6 +30,15 @@ def test_configs_resolve_repo_relative_paths() -> None:
     assert len(replay_cfg.available_data_files()) >= 1
 
 
+def test_replay_config_uses_data_dir_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    replay_cfg = ReplayExperimentConfig()
+
+    assert replay_cfg.datasets_dir == tmp_path.resolve()
+    assert replay_cfg.data_path() == tmp_path.resolve() / "binance_book_snapshot_25_2025-01-01_DOGEUSDT.csv"
+
+
 def test_tune_gamma_returns_positive_scalar() -> None:
     pytest.importorskip("optuna")
 

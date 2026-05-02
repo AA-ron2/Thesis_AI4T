@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+DATA_DIR = os.environ.get("DATA_DIR", "C:/Users/john-/Documents/Thesis_AI4T/datasets/")
 
 
 def find_repo_root(start: Path | None = None) -> Path:
@@ -21,6 +24,13 @@ def find_repo_root(start: Path | None = None) -> Path:
 
 def _tuple(value: tuple[float, float] | list[float]) -> tuple[float, float]:
     return (float(value[0]), float(value[1]))
+
+
+def _resolve_dir(repo_root: Path, value: str | Path) -> Path:
+    directory = Path(value).expanduser()
+    if not directory.is_absolute():
+        directory = repo_root / directory
+    return directory.resolve()
 
 
 @dataclass(frozen=True)
@@ -109,7 +119,9 @@ class ReplayExperimentConfig:
     repo_root: Path = field(default_factory=find_repo_root)
     models_subdir: str = "models"
     results_subdir: str = "results"
-    datasets_subdir: str = "datasets"
+    datasets_subdir: str | Path = field(
+        default_factory=lambda: os.environ.get("DATA_DIR", DATA_DIR)
+    )
 
     pair: str = "DOGEUSDT"
     replay_date: str = "2025-01-01"
@@ -147,7 +159,7 @@ class ReplayExperimentConfig:
 
     @property
     def datasets_dir(self) -> Path:
-        return self.repo_root / self.datasets_subdir
+        return _resolve_dir(self.repo_root, self.datasets_subdir)
 
     @property
     def models_dir(self) -> Path:

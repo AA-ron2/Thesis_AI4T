@@ -61,7 +61,7 @@ The replay experiments use Binance perpetual futures order book data:
 - Expected filename pattern:
   `binance_book_snapshot_25_YYYY-MM-DD_DOGEUSDT.csv`
 
-The loader in [`procs/gym/data_loader.py`](procs/gym/data_loader.py) expects CSVs in the local [`datasets/`](datasets/) folder and computes the midprice as:
+The loader in [`procs/gym/data_loader.py`](procs/gym/data_loader.py) reads CSVs from `DATA_DIR`, which defaults to `C:/Users/john-/Documents/Thesis_AI4T/datasets/`. On Snellius you can point it elsewhere by setting `DATA_DIR` before running the notebooks or tests. The loader computes the midprice as:
 
 ```text
 midprice = (asks[0].price + bids[0].price) / 2
@@ -112,7 +112,7 @@ pip install numpy pandas matplotlib seaborn pytest jupyterlab gymnasium optuna "
 
 ### 3. Add market data
 
-Place your Tardis CSV files in:
+Place your Tardis CSV files in the directory referenced by `DATA_DIR`. By default that is:
 
 ```text
 datasets/
@@ -122,6 +122,18 @@ For example:
 
 ```text
 datasets/binance_book_snapshot_25_2025-01-01_DOGEUSDT.csv
+```
+
+Override the location when needed, for example on Snellius:
+
+```bash
+export DATA_DIR="/path/to/shared/datasets/"
+```
+
+Or in PowerShell:
+
+```powershell
+$env:DATA_DIR="C:/path/to/shared/datasets/"
 ```
 
 ### 4. Launch notebooks
