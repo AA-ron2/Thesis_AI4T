@@ -1,114 +1,99 @@
 """
 run_one_day.py
 --------------
-Processes a single day of the A-S baseline.
+Processes a single day of the A-S baseline from a manifest row.
 Called by SLURM array jobs via:
-    python run_one_day.py --day-index $SLURM_ARRAY_TASK_ID
-
-Saves results to: results/day_YYYY-MM-DD.csv
+    python run_one_day.py --manifest results/baseline_manifest.csv --day-index $SLURM_ARRAY_TASK_ID
 """
 
+from __future__ import annotations
+
 import argparse
-import sys
 import pathlib
-import numpy as np
-import pandas as pd
+import sys
 from datetime import datetime
 
-# ── Project root ──────────────────────────────────────────────────────────────
+import pandas as pd
+
 PROJECT_ROOT = next(
-    (p for p in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]
-     if (p / "procs").exists()),
-    pathlib.Path.cwd()
+    (p for p in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents] if (p / "procs").exists()),
+    pathlib.Path.cwd(),
 )
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from procs.gym.calibration import tune_gamma
-from procs.gym.data_loader import load_multi_day
+from procs.gym.calibration import calibrate_from_arrays, tune_gamma
+from procs.gym.data_loader import load_single_day
 from procs.gym.experiment_config import ReplayExperimentConfig
 from procs.gym.helpers.fast_rollout import fast_simulate
 
-
-# ── Calibration helper (copied from notebook) ─────────────────────────────────
-def calibrate_from_arrays(
-    S: np.ndarray,
-    dt: np.ndarray,
-    tick_size: float = 0.00001,
-    n_depth_ticks: int = 5,
-    min_arrivals: int = 10,
-) -> tuple[float, float, float]:
-    T = float(dt.sum())
-    N = len(S)
-
-    dS = np.diff(S)
-    dt_mid = dt[1:]
-    window_size = max(1, int(600.0 / np.median(dt_mid[dt_mid > 0])))
-    sigma_estimates = []
-    for start in range(0, N - 1 - window_size, window_size):
-        dS_w = dS[start:start + window_size]
-        dt_w = dt_mid[start:start + window_size]
-        total_t = dt_w.sum()
-        if total_t > 0:
-            sigma_estimates.append(np.sqrt(np.sum(dS_w ** 2) / total_t))
-    sigma = float(np.median(sigma_estimates)) if sigma_estimates else float(
-        np.sqrt(np.sum(dS ** 2) / T))
-
-    mid_diff = np.abs(np.diff(S))
-    arrival_mask = mid_diff >= tick_size * 0.5
-    arrival_depths = mid_diff[arrival_mask]
-
-    bin_edges = np.arange(0, n_depth_ticks + 1) * tick_size
-    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2
-    counts, _ = np.histogram(arrival_depths, bins=bin_edges)
-    lambda_emp = counts / T
-
-    valid = counts >= min_arrivals
-    if valid.sum() < 2:
-        return sigma, float(len(arrival_depths) / T), 35_000.0
-
-    x = bin_centres[valid]
-    y = np.log(lambda_emp[valid])
-    n = len(x)
-    slope = (n * np.dot(x, y) - x.sum() * y.sum()) / \
-            (n * np.dot(x, x) - x.sum() ** 2)
-    intercept = (y.sum() - slope * x.sum()) / n
-    kappa = float(-slope)
-    A = float(np.exp(intercept))
-    return sigma, A, kappa
+MANIFEST_COLUMNS = {"day_index", "date", "input_path", "result_path"}
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-def main():
+def load_manifest_row(manifest_path: pathlib.Path, day_index: int) -> tuple[pd.Series, int]:
+    manifest = pd.read_csv(manifest_path)
+    missing_columns = MANIFEST_COLUMNS.difference(manifest.columns)
+    if missing_columns:
+        raise ValueError(
+            f"Manifest missing required columns: {sorted(missing_columns)}"
+        )
+
+    row = manifest.loc[manifest["day_index"] == day_index]
+    if row.empty:
+        raise IndexError(f"Day index {day_index} not present in manifest {manifest_path}")
+    if len(row) > 1:
+        raise ValueError(f"Day index {day_index} appears multiple times in {manifest_path}")
+
+    return row.iloc[0], len(manifest)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--day-index", type=int, required=True,
-                        help="Index into the sorted list of available days")
+    parser.add_argument(
+        "--day-index",
+        type=int,
+        required=True,
+        help="Index into the baseline manifest day list",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=pathlib.Path,
+        required=True,
+        help="CSV manifest written by baseline_snellius.py prepare",
+    )
     args = parser.parse_args()
+
+    manifest_path = args.manifest.resolve()
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
 
     cfg = ReplayExperimentConfig()
     cfg.ensure_artifact_dirs()
 
-    # Load all days, then select just the one we need
-    daily_S, daily_dt, dates = load_multi_day(str(cfg.datasets_dir), pair=cfg.pair)
-    n_days = len(dates)
+    day_record, n_days = load_manifest_row(manifest_path, args.day_index)
+    date = str(day_record["date"])
+    input_path = pathlib.Path(str(day_record["input_path"])).resolve()
+    out_path = pathlib.Path(str(day_record["result_path"])).resolve()
 
-    if args.day_index >= n_days:
-        print(f"Day index {args.day_index} out of range (only {n_days} days available). Exiting.")
-        sys.exit(0)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found for day {date}: {input_path}")
 
-    S    = daily_S[args.day_index]
-    dt   = daily_dt[args.day_index]
-    date = dates[args.day_index]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    midprices, dt_array, _ = load_single_day(str(input_path))
 
     print(f"[{datetime.now()}] Processing day {args.day_index + 1}/{n_days}: {date}")
 
-    T = float(dt.sum())
-    sigma, A, kappa = calibrate_from_arrays(S, dt, tick_size=cfg.tick_size)
+    terminal_time = float(dt_array.sum())
+    sigma, A, kappa = calibrate_from_arrays(
+        midprices,
+        dt_array,
+        tick_size=cfg.tick_size,
+    )
     print(f"  Calibrated: sigma={sigma:.6f}  A={A:.3f}  kappa={kappa:.0f}")
 
     as_gamma, _ = tune_gamma(
-        midprices=S,
-        dt_array=dt,
+        midprices=midprices,
+        dt_array=dt_array,
         sigma=sigma,
         kappa=kappa,
         A=A,
@@ -123,13 +108,13 @@ def main():
     print(f"  Tuned gamma={as_gamma:.4f}")
 
     stats = fast_simulate(
-        midprices=S,
-        dt_array=dt,
+        midprices=midprices,
+        dt_array=dt_array,
         gamma=as_gamma,
         sigma=sigma,
         kappa=kappa,
         A=A,
-        terminal_time=T,
+        terminal_time=terminal_time,
         tick_size=cfg.tick_size,
         Q_MAX=cfg.q_max,
         num_trajectories=cfg.evaluation_rollouts,
@@ -152,7 +137,6 @@ def main():
         "as_gamma": as_gamma,
     }
 
-    out_path = PROJECT_ROOT / "results" / f"day_{date}.csv"
     pd.DataFrame([row]).to_csv(out_path, index=False)
     print(f"[{datetime.now()}] Saved: {out_path}")
     print(

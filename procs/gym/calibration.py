@@ -66,6 +66,68 @@ class ASParameters(NamedTuple):
     kappa: float    # fill probability decay (1 / price unit)
 
 
+def calibrate_from_arrays(
+    midprices: np.ndarray,
+    dt_array: np.ndarray,
+    tick_size: float = 0.00001,
+    n_depth_ticks: int = 5,
+    min_arrivals: int = 10,
+) -> tuple[float, float, float]:
+    """
+    Estimate ``sigma``, ``A``, and ``kappa`` from one replay day already
+    loaded into arrays.
+    """
+    T = float(dt_array.sum())
+    N = len(midprices)
+
+    dS = np.diff(midprices)
+    dt_mid = dt_array[1:]
+    positive_dt = dt_mid[dt_mid > 0]
+    if positive_dt.size == 0:
+        raise ValueError("dt_array must contain at least one positive timestep")
+
+    window_size = max(1, int(600.0 / np.median(positive_dt)))
+    sigma_estimates = []
+    for start in range(0, N - 1 - window_size, window_size):
+        dS_w = dS[start:start + window_size]
+        dt_w = dt_mid[start:start + window_size]
+        total_t = dt_w.sum()
+        if total_t > 0:
+            sigma_estimates.append(np.sqrt(np.sum(dS_w ** 2) / total_t))
+
+    if sigma_estimates:
+        sigma = float(np.median(sigma_estimates))
+    else:
+        sigma = float(np.sqrt(np.sum(dS ** 2) / max(T, 1e-12)))
+
+    mid_diff = np.abs(np.diff(midprices))
+    arrival_mask = mid_diff >= tick_size * 0.5
+    arrival_depths = mid_diff[arrival_mask]
+
+    bin_edges = np.arange(0, n_depth_ticks + 1) * tick_size
+    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2
+    counts, _ = np.histogram(arrival_depths, bins=bin_edges)
+    lambda_emp = counts / max(T, 1e-12)
+
+    valid = counts >= min_arrivals
+    if valid.sum() < 2:
+        return sigma, float(len(arrival_depths) / max(T, 1e-12)), 35_000.0
+
+    x = bin_centres[valid]
+    y = np.log(lambda_emp[valid])
+    n = len(x)
+    sx = x.sum()
+    sy = y.sum()
+    sx2 = (x ** 2).sum()
+    sxy = (x * y).sum()
+    slope = (n * sxy - sx * sy) / (n * sx2 - sx ** 2)
+    intercept = (sy - slope * sx) / n
+
+    kappa = float(-slope) if np.isfinite(slope) and slope < 0 else 35_000.0
+    A = float(np.exp(intercept)) if np.isfinite(intercept) else 0.8
+    return sigma, A, kappa
+
+
 def calibrate_as_parameters(
     filepath: str,
     tick_size: float = 0.00001,
