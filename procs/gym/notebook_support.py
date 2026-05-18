@@ -205,6 +205,43 @@ def summarise_agent_frames(agent_frames: dict[str, pd.DataFrame]) -> pd.DataFram
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def evaluate_rl_per_day(
+    model,
+    vecnorm_path,
+    test_S: list,
+    test_dt: list,
+    test_dates: list,
+    config: ReplayExperimentConfig,
+    *,
+    reward_fn=None,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Evaluate a trained SB3 model independently on each test day.
+
+    Returns a DataFrame indexed by date string with one row per test day.
+    Two separate env instances are created per day: one for simulation
+    and one as the VecNormalize observation-space reference, so that
+    the running of the simulation env never interferes with the normaliser.
+    """
+    from procs.gym.sb3_wrapper import StableBaselinesTradingEnvironment
+    from procs.agents import Sb3Agent
+
+    rows = []
+    for S, dt, date in zip(test_S, test_dt, test_dates):
+        env_sim = build_replay_env(S, dt, config, reward_fn=reward_fn or PnLReward())
+        env_vn = build_replay_env(S, dt, config, reward_fn=reward_fn or PnLReward())
+        sb3_env = StableBaselinesTradingEnvironment(env_vn)
+        eval_vn = freeze_vecnorm(vecnorm_path, sb3_env, config, norm_reward=False)
+        agent = Sb3Agent(model, vecnorm_env=eval_vn)
+        stats = generate_trajectory_stats(env_sim, agent, seed=seed)
+        frame = stats_dict_to_frame(stats)
+        assert len(frame) == 1, "Expected single-trajectory environment (num_trajectories=1)"
+        row = frame.iloc[0].to_dict()
+        row["Day"] = str(date)
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("Day")
+
+
 def run_qmax_sensitivity(
     midprices: np.ndarray,
     dt_array: np.ndarray,
