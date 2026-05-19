@@ -30,8 +30,10 @@ from procs.gym.experiment_config import (
     find_repo_root,
 )
 from procs.gym.notebook_support import (
+    build_multi_day_replay_env,
     build_replay_env,
     build_replay_feature_computer,
+    calibrate_cvar_threshold_sampled_windows,
     evaluate_agent_over_seeds,
     evaluate_as_fast,
     freeze_vecnorm,

@@ -17,6 +17,7 @@ from procs.rewards import PnLReward
 from procs.stochastic_processes import (
     ExponentialFillFunction,
     MarketReplayMidpriceModel,
+    MultiDayReplayMidpriceModel,
     PoissonArrivalModel,
 )
 
@@ -60,6 +61,58 @@ def build_replay_env(
     return TradingEnvironment(
         model_dynamics=LimitOrderModelDynamics(
             midprice_model=MarketReplayMidpriceModel(midprices, dt_array, num_trajectories),
+            arrival_model=PoissonArrivalModel(
+                np.array([config.A, config.A]),
+                num_trajectories,
+                use_linear_approximation=False,
+            ),
+            fill_probability_model=ExponentialFillFunction(config.kappa, num_trajectories),
+            num_trajectories=num_trajectories,
+        ),
+        reward_function=reward_fn,
+        max_inventory=config.q_max,
+        normalise_observation_space=manual_normalise,
+        normalise_action_space=manual_normalise,
+        normalise_rewards=manual_normalise,
+        reward_scale=reward_scale if manual_normalise else None,
+        feature_computer=feature_computer,
+    )
+
+
+def build_multi_day_replay_env(
+    daily_midprices: list[np.ndarray],
+    daily_dt_arrays: list[np.ndarray],
+    config: ReplayExperimentConfig,
+    reward_fn=None,
+    *,
+    mode: str = "random",
+    include_features: bool = True,
+    manual_normalise: bool = False,
+    reward_scale: float | None = None,
+    num_trajectories: int = 1,
+) -> TradingEnvironment:
+    """
+    Build a training environment that samples one complete replay day per reset.
+
+    This avoids concatenating independent trading days into one artificial
+    episode, which would carry inventory across day boundaries and introduce
+    zero-time overnight price jumps.
+    """
+    if reward_fn is None:
+        reward_fn = PnLReward()
+
+    feature_computer = (
+        build_replay_feature_computer(config.feature_window)
+        if include_features else None
+    )
+    return TradingEnvironment(
+        model_dynamics=LimitOrderModelDynamics(
+            midprice_model=MultiDayReplayMidpriceModel(
+                daily_midprices,
+                daily_dt_arrays,
+                num_trajectories,
+                mode=mode,
+            ),
             arrival_model=PoissonArrivalModel(
                 np.array([config.A, config.A]),
                 num_trajectories,
@@ -215,6 +268,7 @@ def evaluate_rl_per_day(
     *,
     reward_fn=None,
     seed: int = 42,
+    num_rollouts: int | None = None,
 ) -> pd.DataFrame:
     """Evaluate a trained SB3 model independently on each test day.
 
@@ -226,20 +280,132 @@ def evaluate_rl_per_day(
     from procs.gym.sb3_wrapper import StableBaselinesTradingEnvironment
     from procs.agents import Sb3Agent
 
+    rollouts = num_rollouts or config.evaluation_rollouts
     rows = []
     for S, dt, date in zip(test_S, test_dt, test_dates):
-        env_sim = build_replay_env(S, dt, config, reward_fn=reward_fn or PnLReward())
-        env_vn = build_replay_env(S, dt, config, reward_fn=reward_fn or PnLReward())
+        env_sim = build_replay_env(
+            S,
+            dt,
+            config,
+            reward_fn=reward_fn or PnLReward(),
+            num_trajectories=rollouts,
+        )
+        env_vn = build_replay_env(
+            S,
+            dt,
+            config,
+            reward_fn=reward_fn or PnLReward(),
+            num_trajectories=rollouts,
+        )
         sb3_env = StableBaselinesTradingEnvironment(env_vn)
         eval_vn = freeze_vecnorm(vecnorm_path, sb3_env, config, norm_reward=False)
         agent = Sb3Agent(model, vecnorm_env=eval_vn)
         stats = generate_trajectory_stats(env_sim, agent, seed=seed)
         frame = stats_dict_to_frame(stats)
-        assert len(frame) == 1, "Expected single-trajectory environment (num_trajectories=1)"
-        row = frame.iloc[0].to_dict()
+        row = frame.mean(numeric_only=True).to_dict()
         row["Day"] = str(date)
+        row["Rollouts"] = float(len(frame))
         rows.append(row)
     return pd.DataFrame(rows).set_index("Day")
+
+
+def calibrate_cvar_threshold_sampled_windows(
+    daily_midprices: list[np.ndarray],
+    daily_dt_arrays: list[np.ndarray],
+    model,
+    vecnorm_path,
+    config: ReplayExperimentConfig,
+    *,
+    n_steps: int | None = None,
+    cvar_alpha: float = 0.2,
+    n_windows: int = 50,
+    tighten: float = 0.2,
+    seed: int | None = None,
+    verbose: bool = True,
+) -> tuple[float, float]:
+    """Calibrate a CVaR threshold from sampled train-day replay windows.
+
+    This keeps the B3 threshold calibration on training data only while
+    avoiding the old concatenated-day episode. Windows are sampled across the
+    provided daily arrays, so the estimate is not silently limited to day 1.
+    """
+    from procs.agents import Sb3Agent
+    from procs.gym.index_names import ASSET_PRICE_INDEX, CASH_INDEX, INVENTORY_INDEX
+    from procs.gym.sb3_wrapper import StableBaselinesTradingEnvironment
+
+    if n_steps is None:
+        n_steps = config.ppo_n_steps
+    if n_windows <= 0:
+        raise ValueError("n_windows must be positive.")
+
+    eligible_days = [
+        day_idx for day_idx, prices in enumerate(daily_midprices)
+        if len(prices) >= n_steps + 1
+    ]
+    if not eligible_days:
+        raise ValueError(
+            f"No training day contains enough snapshots for a {n_steps}-step window."
+        )
+
+    rng = np.random.default_rng(config.evaluation_seed if seed is None else seed)
+    window_max_dds: list[float] = []
+
+    for window_idx in range(n_windows):
+        day_idx = eligible_days[window_idx % len(eligible_days)]
+        prices = np.asarray(daily_midprices[day_idx], dtype=float)
+        dt_array = np.asarray(daily_dt_arrays[day_idx], dtype=float)
+
+        max_start = len(prices) - n_steps - 1
+        start = int(rng.integers(0, max_start + 1)) if max_start > 0 else 0
+        stop = start + n_steps + 1
+
+        S_window = prices[start:stop]
+        dt_window = dt_array[start:stop]
+        env_sim = build_replay_env(S_window, dt_window, config, reward_fn=PnLReward())
+        env_vn = build_replay_env(S_window, dt_window, config, reward_fn=PnLReward())
+        sb3_env = StableBaselinesTradingEnvironment(env_vn)
+        eval_vn = freeze_vecnorm(vecnorm_path, sb3_env, config, norm_reward=False)
+        agent = Sb3Agent(model, vecnorm_env=eval_vn)
+
+        obs, _ = env_sim.reset(seed=(config.evaluation_seed if seed is None else seed) + window_idx)
+        peak_pnl = (
+            obs[:, CASH_INDEX]
+            + obs[:, INVENTORY_INDEX] * obs[:, ASSET_PRICE_INDEX]
+        ).copy()
+        window_dd = np.zeros(env_sim.num_trajectories)
+
+        for _ in range(n_steps):
+            action = agent.get_action(obs)
+            obs, _, terminated, _, _ = env_sim.step(action)
+            pnl = (
+                obs[:, CASH_INDEX]
+                + obs[:, INVENTORY_INDEX] * obs[:, ASSET_PRICE_INDEX]
+            )
+            peak_pnl = np.maximum(peak_pnl, pnl)
+            window_dd = np.maximum(window_dd, peak_pnl - pnl)
+            if bool(terminated[0]):
+                break
+
+        window_max_dds.extend(window_dd.tolist())
+
+    all_dd_arr = np.asarray(window_max_dds, dtype=float)
+    sorted_dd = np.sort(all_dd_arr)
+    cutoff_idx = max(1, int(np.ceil(len(sorted_dd) * cvar_alpha)))
+    cvar_raw = float(sorted_dd[-cutoff_idx:].mean())
+    threshold = cvar_raw * (1.0 - tighten)
+
+    if verbose:
+        print(f"CVaR threshold calibration (sampled windows, window={n_steps} steps)")
+        print(f"  Training days used: {len(eligible_days)}")
+        print(f"  Windows sampled: {len(all_dd_arr)}")
+        print(f"  CVaR_{cvar_alpha:.0%} = mean of worst {cutoff_idx} = {cvar_raw:.6f}")
+        print(f"  Tighten {tighten:.0%} -> d = {threshold:.6f}")
+        print(
+            f"  [mean={all_dd_arr.mean():.6f}  median={np.median(all_dd_arr):.6f}"
+            f"  p95={np.percentile(all_dd_arr, 95):.6f}]"
+        )
+
+    return threshold, cvar_raw
 
 
 def run_qmax_sensitivity(
