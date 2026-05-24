@@ -48,3 +48,15 @@ try:
     from procs.gym.sb3_wrapper import StableBaselinesTradingEnvironment
 except ImportError:
     pass
+
+from procs.gym.alpha_as import (
+    AlphaASAction,
+    AlphaASQuote,
+    AlphaASReplayEnv,
+    DoubleDQNConfig,
+    build_alpha_as_action_grid,
+    compute_alpha_as_quote,
+    decode_alpha_as_action,
+    evaluate_alpha_as_policy,
+    train_double_dqn,
+)
