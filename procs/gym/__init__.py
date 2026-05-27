@@ -30,11 +30,14 @@ from procs.gym.experiment_config import (
     find_repo_root,
 )
 from procs.gym.notebook_support import (
+    build_formula_multi_day_replay_env,
+    build_formula_replay_env,
     build_multi_day_replay_env,
     build_replay_env,
     build_replay_feature_computer,
     calibrate_cvar_threshold_sampled_windows,
     evaluate_agent_over_seeds,
+    evaluate_formula_rl_per_day,
     evaluate_as_fast,
     freeze_vecnorm,
     make_vecnorm,
@@ -59,4 +62,13 @@ from procs.gym.alpha_as import (
     decode_alpha_as_action,
     evaluate_alpha_as_policy,
     train_double_dqn,
+)
+from procs.gym.formula_as import (
+    FORMULA_FEATURE_NAMES,
+    FormulaASActionConfig,
+    FormulaASActionWrapper,
+    FormulaASPolicyAdapter,
+    compute_formula_as_depths,
+    extract_market_feature_arrays,
+    map_formula_action,
 )

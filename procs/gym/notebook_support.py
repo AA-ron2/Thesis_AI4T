@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from procs.gym.experiment_config import ReplayExperimentConfig
+from procs.gym.formula_as import FormulaASActionConfig, FormulaASActionWrapper
 from procs.gym.helpers.fast_rollout import fast_simulate
 from procs.gym.helpers.generate_trajectory_stats import generate_trajectory_stats
 from procs.gym.features import FeatureComputer, RollingVolatility
@@ -128,6 +129,88 @@ def build_multi_day_replay_env(
         normalise_rewards=manual_normalise,
         reward_scale=reward_scale if manual_normalise else None,
         feature_computer=feature_computer,
+    )
+
+
+def build_formula_replay_env(
+    midprices: np.ndarray,
+    dt_array: np.ndarray,
+    config: ReplayExperimentConfig,
+    *,
+    sigma: float,
+    market_features: dict[str, np.ndarray] | None = None,
+    reward_fn=None,
+    gamma_min: float = 0.01,
+    gamma_max: float = 0.9,
+    skew_ticks_max: float = 5.0,
+    enabled_features: tuple[str, ...] | list[str] | None = None,
+    num_trajectories: int = 1,
+) -> FormulaASActionWrapper:
+    """Build a one-day replay env where actions are A-S parameters."""
+    base_env = build_replay_env(
+        midprices,
+        dt_array,
+        config,
+        reward_fn=reward_fn,
+        include_features=False,
+        manual_normalise=False,
+        num_trajectories=num_trajectories,
+    )
+    return FormulaASActionWrapper(
+        base_env,
+        action_config=FormulaASActionConfig(
+            sigma=sigma,
+            kappa=config.kappa,
+            tick_size=config.tick_size,
+            gamma_min=gamma_min,
+            gamma_max=gamma_max,
+            skew_ticks_max=skew_ticks_max,
+        ),
+        market_features=market_features,
+        rolling_window=config.feature_window,
+        enabled_features=enabled_features,
+    )
+
+
+def build_formula_multi_day_replay_env(
+    daily_midprices: list[np.ndarray],
+    daily_dt_arrays: list[np.ndarray],
+    config: ReplayExperimentConfig,
+    *,
+    sigma: float,
+    daily_market_features: list[dict[str, np.ndarray]] | None = None,
+    reward_fn=None,
+    mode: str = "random",
+    gamma_min: float = 0.01,
+    gamma_max: float = 0.9,
+    skew_ticks_max: float = 5.0,
+    enabled_features: tuple[str, ...] | list[str] | None = None,
+    num_trajectories: int = 1,
+) -> FormulaASActionWrapper:
+    """Build a multi-day replay env where PPO controls A-S parameters."""
+    base_env = build_multi_day_replay_env(
+        daily_midprices,
+        daily_dt_arrays,
+        config,
+        reward_fn=reward_fn,
+        mode=mode,
+        include_features=False,
+        manual_normalise=False,
+        num_trajectories=num_trajectories,
+    )
+    return FormulaASActionWrapper(
+        base_env,
+        action_config=FormulaASActionConfig(
+            sigma=sigma,
+            kappa=config.kappa,
+            tick_size=config.tick_size,
+            gamma_min=gamma_min,
+            gamma_max=gamma_max,
+            skew_ticks_max=skew_ticks_max,
+        ),
+        daily_market_features=daily_market_features,
+        rolling_window=config.feature_window,
+        enabled_features=enabled_features,
     )
 
 
@@ -309,6 +392,70 @@ def evaluate_rl_per_day(
     return pd.DataFrame(rows).set_index("Day")
 
 
+def evaluate_formula_rl_per_day(
+    model,
+    vecnorm_path,
+    test_S: list,
+    test_dt: list,
+    test_dates: list,
+    config: ReplayExperimentConfig,
+    *,
+    sigma: float,
+    test_market_features: list[dict[str, np.ndarray]] | None = None,
+    reward_fn=None,
+    seed: int = 42,
+    num_rollouts: int | None = None,
+    gamma_min: float = 0.01,
+    gamma_max: float = 0.9,
+    skew_ticks_max: float = 5.0,
+    enabled_features: tuple[str, ...] | list[str] | None = None,
+) -> pd.DataFrame:
+    """Evaluate a formula-AS parameter policy independently on each test day."""
+    from procs.gym.sb3_wrapper import StableBaselinesTradingEnvironment
+    from procs.agents import Sb3Agent
+
+    rollouts = num_rollouts or config.evaluation_rollouts
+    feature_list = test_market_features or [None] * len(test_S)
+    rows = []
+    for S, dt, date, features in zip(test_S, test_dt, test_dates, feature_list):
+        env_sim = build_formula_replay_env(
+            S,
+            dt,
+            config,
+            sigma=sigma,
+            market_features=features,
+            reward_fn=reward_fn or PnLReward(),
+            gamma_min=gamma_min,
+            gamma_max=gamma_max,
+            skew_ticks_max=skew_ticks_max,
+            enabled_features=enabled_features,
+            num_trajectories=rollouts,
+        )
+        env_vn = build_formula_replay_env(
+            S,
+            dt,
+            config,
+            sigma=sigma,
+            market_features=features,
+            reward_fn=reward_fn or PnLReward(),
+            gamma_min=gamma_min,
+            gamma_max=gamma_max,
+            skew_ticks_max=skew_ticks_max,
+            enabled_features=enabled_features,
+            num_trajectories=rollouts,
+        )
+        sb3_env = StableBaselinesTradingEnvironment(env_vn)
+        eval_vn = freeze_vecnorm(vecnorm_path, sb3_env, config, norm_reward=False)
+        agent = Sb3Agent(model, vecnorm_env=eval_vn)
+        stats = generate_trajectory_stats(env_sim, agent, seed=seed)
+        frame = stats_dict_to_frame(stats)
+        row = frame.mean(numeric_only=True).to_dict()
+        row["Day"] = str(date)
+        row["Rollouts"] = float(len(frame))
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("Day")
+
+
 def calibrate_cvar_threshold_sampled_windows(
     daily_midprices: list[np.ndarray],
     daily_dt_arrays: list[np.ndarray],
@@ -322,6 +469,12 @@ def calibrate_cvar_threshold_sampled_windows(
     tighten: float = 0.2,
     seed: int | None = None,
     verbose: bool = True,
+    sigma: float | None = None,
+    daily_market_features: list[dict[str, np.ndarray]] | None = None,
+    formula_gamma_min: float = 0.01,
+    formula_gamma_max: float = 0.9,
+    formula_skew_ticks_max: float = 5.0,
+    formula_enabled_features: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[float, float]:
     """Calibrate a CVaR threshold from sampled train-day replay windows.
 
@@ -361,25 +514,60 @@ def calibrate_cvar_threshold_sampled_windows(
 
         S_window = prices[start:stop]
         dt_window = dt_array[start:stop]
-        env_sim = build_replay_env(S_window, dt_window, config, reward_fn=PnLReward())
-        env_vn = build_replay_env(S_window, dt_window, config, reward_fn=PnLReward())
+        features_window = None
+        if daily_market_features is not None:
+            features_window = {
+                key: np.asarray(values[start:stop])
+                for key, values in daily_market_features[day_idx].items()
+            }
+
+        if sigma is None:
+            env_sim = build_replay_env(S_window, dt_window, config, reward_fn=PnLReward())
+            env_vn = build_replay_env(S_window, dt_window, config, reward_fn=PnLReward())
+        else:
+            env_sim = build_formula_replay_env(
+                S_window,
+                dt_window,
+                config,
+                sigma=sigma,
+                market_features=features_window,
+                reward_fn=PnLReward(),
+                gamma_min=formula_gamma_min,
+                gamma_max=formula_gamma_max,
+                skew_ticks_max=formula_skew_ticks_max,
+                enabled_features=formula_enabled_features,
+            )
+            env_vn = build_formula_replay_env(
+                S_window,
+                dt_window,
+                config,
+                sigma=sigma,
+                market_features=features_window,
+                reward_fn=PnLReward(),
+                gamma_min=formula_gamma_min,
+                gamma_max=formula_gamma_max,
+                skew_ticks_max=formula_skew_ticks_max,
+                enabled_features=formula_enabled_features,
+            )
         sb3_env = StableBaselinesTradingEnvironment(env_vn)
         eval_vn = freeze_vecnorm(vecnorm_path, sb3_env, config, norm_reward=False)
         agent = Sb3Agent(model, vecnorm_env=eval_vn)
 
         obs, _ = env_sim.reset(seed=(config.evaluation_seed if seed is None else seed) + window_idx)
+        state = env_sim.metric_state if hasattr(env_sim, "metric_state") else obs
         peak_pnl = (
-            obs[:, CASH_INDEX]
-            + obs[:, INVENTORY_INDEX] * obs[:, ASSET_PRICE_INDEX]
+            state[:, CASH_INDEX]
+            + state[:, INVENTORY_INDEX] * state[:, ASSET_PRICE_INDEX]
         ).copy()
         window_dd = np.zeros(env_sim.num_trajectories)
 
         for _ in range(n_steps):
             action = agent.get_action(obs)
             obs, _, terminated, _, _ = env_sim.step(action)
+            state = env_sim.metric_state if hasattr(env_sim, "metric_state") else obs
             pnl = (
-                obs[:, CASH_INDEX]
-                + obs[:, INVENTORY_INDEX] * obs[:, ASSET_PRICE_INDEX]
+                state[:, CASH_INDEX]
+                + state[:, INVENTORY_INDEX] * state[:, ASSET_PRICE_INDEX]
             )
             peak_pnl = np.maximum(peak_pnl, pnl)
             window_dd = np.maximum(window_dd, peak_pnl - pnl)

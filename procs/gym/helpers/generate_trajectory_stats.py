@@ -30,6 +30,22 @@ from procs.agents.agent import Agent
 from procs.gym.index_names import CASH_INDEX, INVENTORY_INDEX, ASSET_PRICE_INDEX
 
 
+def _metric_state(env: TradingEnvironment, obs: np.ndarray) -> np.ndarray:
+    state = getattr(env, "metric_state", None)
+    if callable(state):
+        return state()
+    if state is not None:
+        return np.asarray(state)
+    return obs
+
+
+def _depth_action(env: TradingEnvironment, action: np.ndarray) -> np.ndarray:
+    depths = getattr(env, "last_depth_action", None)
+    if depths is not None:
+        return np.asarray(depths)
+    return action
+
+
 def generate_trajectory_stats(
     env: TradingEnvironment,
     agent: Agent,
@@ -63,12 +79,13 @@ def generate_trajectory_stats(
 
     N = env.num_trajectories
     obs, _ = env.reset()
+    metric_obs = _metric_state(env, obs)
 
     # ── Running accumulators (all shape (N,)) ─────────────────
     # PnL path
     pnl = (
-        obs[:, CASH_INDEX]
-        + obs[:, INVENTORY_INDEX] * obs[:, ASSET_PRICE_INDEX]
+        metric_obs[:, CASH_INDEX]
+        + metric_obs[:, INVENTORY_INDEX] * metric_obs[:, ASSET_PRICE_INDEX]
     )
     running_max_pnl = pnl.copy()
     max_drawdown = np.zeros(N)
@@ -81,9 +98,9 @@ def generate_trajectory_stats(
     count_neg = np.zeros(N)
 
     # Inventory and spread
-    sum_abs_q = np.abs(obs[:, INVENTORY_INDEX]).copy()
+    sum_abs_q = np.abs(metric_obs[:, INVENTORY_INDEX]).copy()
     near_cap_threshold = 0.8 * env.max_inventory
-    sum_near_cap = (np.abs(obs[:, INVENTORY_INDEX]) >= near_cap_threshold).astype(np.float64)
+    sum_near_cap = (np.abs(metric_obs[:, INVENTORY_INDEX]) >= near_cap_threshold).astype(np.float64)
     sum_spread = np.zeros(N)
     step_count = 0
 
@@ -94,6 +111,8 @@ def generate_trajectory_stats(
             action = np.repeat(action.reshape(1, -1), N, axis=0)
 
         obs, reward, done, truncated, info = env.step(action)
+        metric_obs = _metric_state(env, obs)
+        depth_action = _depth_action(env, action)
         step_count += 1
 
         r = reward  # (N,)
@@ -110,16 +129,16 @@ def generate_trajectory_stats(
 
         # PnL path → drawdown
         pnl = (
-            obs[:, CASH_INDEX]
-            + obs[:, INVENTORY_INDEX] * obs[:, ASSET_PRICE_INDEX]
+            metric_obs[:, CASH_INDEX]
+            + metric_obs[:, INVENTORY_INDEX] * metric_obs[:, ASSET_PRICE_INDEX]
         )
         running_max_pnl = np.maximum(running_max_pnl, pnl)
         max_drawdown = np.maximum(max_drawdown, running_max_pnl - pnl)
 
         # Inventory and spread
-        sum_abs_q += np.abs(obs[:, INVENTORY_INDEX])
-        sum_near_cap += (np.abs(obs[:, INVENTORY_INDEX]) >= near_cap_threshold)
-        sum_spread += action[:, 0] + action[:, 1]
+        sum_abs_q += np.abs(metric_obs[:, INVENTORY_INDEX])
+        sum_near_cap += (np.abs(metric_obs[:, INVENTORY_INDEX]) >= near_cap_threshold)
+        sum_spread += depth_action[:, 0] + depth_action[:, 1]
 
         if done[0]:
             break
@@ -150,7 +169,7 @@ def generate_trajectory_stats(
 
     return {
         "total_pnl": pnl,
-        "terminal_q": obs[:, INVENTORY_INDEX],
+        "terminal_q": metric_obs[:, INVENTORY_INDEX],
         "mean_spread": sum_spread / T,
         "sharpe": sharpe,
         "sortino": sortino,
