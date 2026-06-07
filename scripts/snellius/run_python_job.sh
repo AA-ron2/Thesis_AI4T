@@ -34,7 +34,7 @@ mkdir -p "$PROJECT_DIR/logs"
 
 module load 2023
 module load Miniconda3/23.5.2-0
-source "$(conda info --base)/etc/profile.d/conda.sh"
+source /sw/arch/RHEL8/EB_production/2023/software/Miniconda3/23.5.2-0/etc/profile.d/conda.sh
 conda activate "$CONDA_ENV"
 
 cd "$PROJECT_DIR"
@@ -48,4 +48,3 @@ echo "[$(date)] DATA_DIR  : $DATA_DIR"
 python "$SCRIPT_PATH" ${SCRIPT_ARGS:-}
 
 echo "[$(date)] Finished $SCRIPT_PATH"
-
